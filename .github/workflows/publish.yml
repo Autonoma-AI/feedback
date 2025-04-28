@@ -1,0 +1,65 @@
+name: Close & archive Done issues
+
+# run on Mondays
+on:
+  schedule:
+    - cron: '30 13 * * 1'
+  workflow_dispatch:
+
+permissions:
+  issues: write        # needed to close issues
+  repository-projects: write      # needed to read/archive project cards
+
+jobs:
+  close-and-archive:
+    runs-on: ubuntu-latest
+    env:
+      PROJECT_NAME: "Tracking"   # ← set this to your GitHub Project’s name
+    steps:
+      - name: Close & archive all “Done” issues
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const owner = context.repo.owner;
+            const repo  = context.repo.repo;
+            const projectName = process.env.PROJECT_NAME;
+
+            // 1) Find your project by name
+            const { data: projects } = await github.rest.projects.listForRepo({ owner, repo });
+            const project = projects.find(p => p.name === projectName);
+            if (!project) {
+              core.setFailed(`Could not find project "${projectName}"`);
+              return;
+            }
+
+            // 2) Find the “Done” column
+            const { data: columns } = await github.rest.projects.listColumns({
+              project_id: project.id
+            });
+            const doneCol = columns.find(c => c.name === 'Done');
+            if (!doneCol) {
+              core.setFailed(`Could not find a “Done” column in project "${projectName}"`);
+              return;
+            }
+
+            // 3) List all non-archived cards in Done
+            const { data: cards } = await github.rest.projects.listCards({
+              column_id: doneCol.id,
+            });
+
+            // 4) For each card: close its issue & archive the card
+            for (const card of cards) {
+              if (!card.content_url) continue;   // skip if not an issue
+              const m = card.content_url.match(/\/issues\/(\d+)$/);
+              if (!m) continue;
+
+              const issue_number = parseInt(m[1], 10);
+              // close the issue
+              await github.rest.issues.update({
+                owner, repo, issue_number,
+                state: 'closed'
+              });
+              // archive the card
+              await github.rest.projects.archiveCard({ card_id: card.id });
+            }
